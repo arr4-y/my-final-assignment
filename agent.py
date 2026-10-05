@@ -99,8 +99,7 @@ class YourAgent:
             top_k=7, #10
         )
         answer = result.answer
-        if answer.needs_human_review:
-            answer = ResearchAnswer(
+        if answer.needs_human_review and not answer.citations:            answer = ResearchAnswer(
                 answer=REFUSAL_TEXT,
                 citations=(),
                 confidence=0.0,
