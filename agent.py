@@ -35,12 +35,17 @@ from bootcamp_agent.retrieval import retrieve
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"
 
 class _QuoteClient:
+   
     INSTRUCTION = (
         "Instruction: your answer MUST use the exact phrases from the retrieved context. "
         "Copy key terms word for word. "
         "Include ALL defenses, conditions, or concepts listed in the context, "
         "using the source's exact wording."
     )
+
+    # "Instruction: Copy the exact phrases from the retrieved context. "
+    #    "Do NOT paraphrase. Use the source's exact words for every concept. "
+    #    "List ALL items mentioned in the context, word for word."
 
     def __init__(self, inner):
         self.inner = inner
@@ -91,7 +96,7 @@ class YourAgent:
             self.documents,
             _QuoteClient(self.client),
             max_tool_calls=3,
-            top_k=7,
+            top_k=7, #10
         )
         answer = result.answer
         if answer.needs_human_review:
