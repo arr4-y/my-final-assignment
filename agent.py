@@ -27,6 +27,8 @@ from bootcamp_agent.documents import Document, load_corpus
 from bootcamp_agent.llm import LLMClient, get_client
 from bootcamp_agent.schema import ResearchAnswer
 from bootcamp_agent.tools import Tool, build_tools
+from bootcamp_agent.retrieval import retrieve
+
 
 #: The six course documents, copied in by `bootcamp capstone new`. Versioned
 #: input: nothing you build writes to it.
@@ -74,6 +76,16 @@ class YourAgent:
         )
 
     def __call__(self, question: str) -> ResearchAnswer:
+        # Check if retrieval finds anything relevant
+        top = retrieve(question, self.documents, top_k=3)
+        if not top or top[0].score < 4.0:
+            return ResearchAnswer(
+                answer=REFUSAL_TEXT,
+                citations=(),
+                confidence=0.0,
+                needs_human_review=True,
+            )
+        
         result = answer_question(
             question,
             self.documents,
@@ -82,11 +94,11 @@ class YourAgent:
             top_k=7,
         )
         answer = result.answer
-        if not answer.citations and answer.needs_human_review:
+        if answer.needs_human_review:
             answer = ResearchAnswer(
                 answer=REFUSAL_TEXT,
                 citations=(),
-                confidence=min(answer.confidence, 0.2),
+                confidence=0.0,
                 needs_human_review=True,
             )
         return answer
