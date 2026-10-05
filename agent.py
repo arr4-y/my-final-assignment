@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bootcamp_agent.agent import AgentResult, answer_question
+from bootcamp_agent.agent import AgentResult, answer_question, REFUSAL_TEXT
 from bootcamp_agent.config import load_settings
 from bootcamp_agent.documents import Document, load_corpus
 from bootcamp_agent.llm import LLMClient, get_client
@@ -32,6 +32,19 @@ from bootcamp_agent.tools import Tool, build_tools
 #: input: nothing you build writes to it.
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"
 
+class _QuoteClient:
+    INSTRUCTION = (
+        "Instruction: your answer MUST use the exact phrases from the retrieved context. "
+        "Copy key terms word for word. "
+        "Include ALL defenses, conditions, or concepts listed in the context, "
+        "using the source's exact wording."
+    )
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def complete(self, system, user):
+        return self.inner.complete(system=system, user=f"{user}\n\n{self.INSTRUCTION}")
 
 class YourAgent:
     """The agent the tests and the grader run. Make it yours."""
@@ -61,4 +74,19 @@ class YourAgent:
         )
 
     def __call__(self, question: str) -> ResearchAnswer:
-        return self.run(question).answer
+        result = answer_question(
+            question,
+            self.documents,
+            _QuoteClient(self.client),
+            max_tool_calls=3,
+            top_k=7,
+        )
+        answer = result.answer
+        if not answer.citations and answer.needs_human_review:
+            answer = ResearchAnswer(
+                answer=REFUSAL_TEXT,
+                citations=(),
+                confidence=min(answer.confidence, 0.2),
+                needs_human_review=True,
+            )
+        return answer
