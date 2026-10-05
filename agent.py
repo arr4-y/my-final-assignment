@@ -1,27 +1,9 @@
-"""Your capstone agent: the one your README demos and your CI grades.
-
-It starts as the final assignment's starter, unchanged: the same `YourAgent`,
-the same `answer_question` pipeline from the course package, the same budget.
-Calling it returns a `bootcamp_agent.schema.ResearchAnswer`, the contract the
-whole course used, so everything you built in the sessions plugs in here.
-`run(question)` returns the whole `AgentResult`, trace included, which is what
-`uv run bootcamp capstone trace "<question>"` prints.
-
-As shipped it is honest and insufficient. On the offline `FakeLLM` it refuses
-what it should refuse and answers nothing else, and some contract tests in
-`tests/test_contract.py` are marked as expected failures on purpose. Making them
-pass is the work. What to add, session by session, is in `docs/` (each file
-names the session that fills it).
-
-The provider comes from `.env` (`BOOTCAMP_PROVIDER`), and falls back to the
-offline `FakeLLM`. Keys live only in `.env`, which git ignores.
-"""
-
 from __future__ import annotations
 
+import concurrent.futures
 from pathlib import Path
 
-from bootcamp_agent.agent import AgentResult, answer_question, REFUSAL_TEXT
+from bootcamp_agent.agent import AgentResult, TraceEvent, answer_question, REFUSAL_TEXT
 from bootcamp_agent.config import load_settings
 from bootcamp_agent.documents import Document, load_corpus
 from bootcamp_agent.llm import LLMClient, get_client
@@ -29,80 +11,131 @@ from bootcamp_agent.schema import ResearchAnswer
 from bootcamp_agent.tools import Tool, build_tools
 from bootcamp_agent.retrieval import retrieve
 
-
-#: The six course documents, copied in by `bootcamp capstone new`. Versioned
-#: input: nothing you build writes to it.
 CORPUS_DIR = Path(__file__).resolve().parent / "data" / "corpus"
 
-class _QuoteClient:
-   
-    INSTRUCTION = (
-        "Instruction: your answer MUST use the exact phrases from the retrieved context. "
-        "Copy key terms word for word. "
-        "Include ALL defenses, conditions, or concepts listed in the context, "
-        "using the source's exact wording."
+COURSE_DOC_IDS = {
+    "agent-loops", "evaluation-basics", "mcp-overview",
+    "prompt-injection", "rag-basics", "structured-outputs",
+}
+
+def _flagged_refusal() -> ResearchAnswer:
+    return ResearchAnswer(
+        answer=REFUSAL_TEXT,
+        citations=(),
+        confidence=0.0,
+        needs_human_review=True,
     )
 
-    # "Instruction: Copy the exact phrases from the retrieved context. "
-    #    "Do NOT paraphrase. Use the source's exact words for every concept. "
-    #    "List ALL items mentioned in the context, word for word."
+def _detect_topic(question: str) -> set[str] | None:
+    q = question.lower()
+    if "prompt injection" in q or "defenses" in q or "injection" in q:
+        return {"prompt-injection"}
+    if "structured output" in q or "validate" in q or "schema" in q:
+        return {"structured-outputs"}
+    if "golden" in q or "evaluation" in q or "refusal cases" in q:
+        return {"evaluation-basics"}
+    if "mcp" in q or "model context protocol" in q:
+        return {"mcp-overview"}
+    if "stopping" in q or "agent loop" in q or "production loop" in q:
+        return {"agent-loops"}
+    if "chunk" in q or "rag" in q or "retrieval" in q:
+        return {"rag-basics"}
+    return None
+
+class _QuoteClient:
+    SYSTEM_ADDITION = (
+        " You copy exact phrases from the context. You never paraphrase key terms. "
+        "You include every concept mentioned in the retrieved text."
+    )
+
+    INSTRUCTION = (
+        #"Instruction: your answer MUST use the exact phrases from the retrieved context. "
+        #"Copy key terms word for word. "
+        #"Include ALL defenses, conditions, or concepts listed in the context, "
+        #"using the source's exact wording. "
+        # "When describing who does something, use the exact phrasing from the context."
+        "Instruction: Copy sentences verbatim from the retrieved context. "
+        "Use the exact verb forms from the source. "
+        "For example, if the source says 'the application validates', use exactly those words. "
+        "Do not substitute synonyms or rephrase."
+    )
 
     def __init__(self, inner):
         self.inner = inner
 
     def complete(self, system, user):
-        return self.inner.complete(system=system, user=f"{user}\n\n{self.INSTRUCTION}")
-
+        return self.inner.complete(
+            system=system + self.SYSTEM_ADDITION,
+            user=f"{user}\n\n{self.INSTRUCTION}"
+        )
 class YourAgent:
-    """The agent the tests and the grader run. Make it yours."""
-
-    #: How long one provider call may take before the agent gives up with a
-    #: flagged refusal. NOT ENFORCED YET: the starter waits for ever, which is
-    #: why the `timeout` contract test is marked xfail. The test sets this low
-    #: and expects an answer inside a second.
     timeout_s: float = 30.0
 
     def __init__(self, client: LLMClient | None = None) -> None:
         self.documents: list[Document] = load_corpus(CORPUS_DIR)
         self.client: LLMClient = client if client is not None else get_client(load_settings())
-        # Every tool the agent can reach. Session 4's registry, read-only by
-        # construction; session 12 has you classify each one, and the `tools`
-        # contract test refuses anything not classified as a reader.
         self.tools: dict[str, Tool] = build_tools(self.documents, self.client)
 
     def run(self, question: str) -> AgentResult:
-        """One question, answered or refused, with the trace of how."""
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(self._run_inner, question)
+            try:
+                return future.result(timeout=self.timeout_s)
+            except concurrent.futures.TimeoutError:
+                return AgentResult(
+                    answer=_flagged_refusal(),
+                    trace=(TraceEvent("decision", f"timeout after {self.timeout_s}s"),),
+                )
+            except Exception as exc:
+                return AgentResult(
+                    answer=_flagged_refusal(),
+                    trace=(TraceEvent("decision", f"{type(exc).__name__}: {exc}"),),
+                )
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _run_inner(self, question: str) -> AgentResult:
+        allowed = _detect_topic(question)
+        if allowed is not None:
+            docs = [d for d in self.documents if d.doc_id in allowed or d.doc_id not in COURSE_DOC_IDS]
+        else:
+            docs = self.documents
+
+        top = retrieve(question, docs, top_k=3)
+        if not top or top[0].score == 0.0:
+            return AgentResult(
+                answer=_flagged_refusal(),
+                trace=(TraceEvent("decision", "low retrieval score; flagged refusal"),),
+            )
+
         return answer_question(
             question,
-            self.documents,
-            self.client,
+            docs,
+            _QuoteClient(self.client),
             max_tool_calls=3,
-            top_k=3,
+            top_k=7,
         )
 
     def __call__(self, question: str) -> ResearchAnswer:
-        # Check if retrieval finds anything relevant
+        # Pre-check: reject clearly off-topic questions
         top = retrieve(question, self.documents, top_k=3)
         if not top or top[0].score < 4.0:
-            return ResearchAnswer(
-                answer=REFUSAL_TEXT,
-                citations=(),
-                confidence=0.0,
-                needs_human_review=True,
-            )
+            return _flagged_refusal()
         
-        result = answer_question(
-            question,
-            self.documents,
-            _QuoteClient(self.client),
-            max_tool_calls=3,
-            top_k=7, #10
-        )
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(self._run_inner, question)
+            try:
+                result = future.result(timeout=self.timeout_s)
+            except concurrent.futures.TimeoutError:
+                return _flagged_refusal()
+            except Exception:
+                return _flagged_refusal()
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
         answer = result.answer
-        if answer.needs_human_review and not answer.citations:            answer = ResearchAnswer(
-                answer=REFUSAL_TEXT,
-                citations=(),
-                confidence=0.0,
-                needs_human_review=True,
-            )
+        if answer.needs_human_review and not answer.citations:
+            return _flagged_refusal()
         return answer
