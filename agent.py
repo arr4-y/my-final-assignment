@@ -53,7 +53,7 @@ class _QuoteClient:
         "Copy key terms word for word. "
         "Include ALL defenses, conditions, or concepts listed in the context, "
         "using the source's exact wording. "
-         "When describing who does something, use the exact phrasing from the context."
+        "When describing who does something, use the exact phrasing from the context."
         
     )
 
