@@ -49,15 +49,12 @@ class _QuoteClient:
     )
 
     INSTRUCTION = (
-        #"Instruction: your answer MUST use the exact phrases from the retrieved context. "
-        #"Copy key terms word for word. "
-        #"Include ALL defenses, conditions, or concepts listed in the context, "
-        #"using the source's exact wording. "
-        # "When describing who does something, use the exact phrasing from the context."
-        "Instruction: Copy sentences verbatim from the retrieved context. "
-        "Use the exact verb forms from the source. "
-        "For example, if the source says 'the application validates', use exactly those words. "
-        "Do not substitute synonyms or rephrase."
+        "Instruction: your answer MUST use the exact phrases from the retrieved context. "
+        "Copy key terms word for word. "
+        "Include ALL defenses, conditions, or concepts listed in the context, "
+        "using the source's exact wording. "
+         "When describing who does something, use the exact phrasing from the context."
+        
     )
 
     def __init__(self, inner):
